@@ -1,0 +1,32 @@
+
+dataset:
+  data_name: "acic2018"
+
+train:
+  epochs: 500
+  batch_size: 256
+  lr: 0.0005
+  valid_epoch_interval: 50
+
+diffusion:
+  layers: 6
+  channels: 64 
+  f_dim: 180
+  cond_dim: 178
+  hidden_dim: 256
+  side_dim: 33
+  nheads: 2 #4
+  diffusion_embedding_dim: 128
+  beta_start: 0.0001
+  beta_end: 0.5
+  num_steps: 100
+  schedule: "quad"
+  mixed: False
+  state_dim: 64
+
+model:
+  is_unconditional: 0
+  timeemb: 32
+  featureemb: 32 #16
+  target_strategy: "random"
+  mixed: False
