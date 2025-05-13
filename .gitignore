@@ -1,0 +1,6 @@
+.DS_Store
+*.pyc # 同时忽略 Python 编译文件
+__pycache__/ # 同时忽略 Python 缓存目录
+.DS_Store
+*.pyc # 同时忽略 Python 编译文件
+__pycache__/
