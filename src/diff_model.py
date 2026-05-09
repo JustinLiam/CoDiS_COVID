@@ -1248,22 +1248,41 @@ class diff_CSDI(nn.Module):
         super().__init__()
         self.config = config
         self.channels = config["channels"]
-        self.cond_dim = config["cond_dim"]
+        self.conditioning = config.get("conditioning", "global_broadcast")
+        if self.conditioning not in ("global_broadcast", "fused_add"):
+            raise ValueError(
+                f"diffusion.conditioning must be 'global_broadcast' or 'fused_add', "
+                f"got {self.conditioning!r}"
+            )
         self.hidden_dim = config["hidden_dim"]
         self.state_dim = config["state_dim"]
+        self.target_dim = config.get("target_dim", 2)
+
+        if self.conditioning == "fused_add":
+            if "fused_cond_dim" not in config:
+                raise ValueError(
+                    "diffusion.fused_cond_dim is required when conditioning=='fused_add' "
+                    "(e.g. ACIC 178 = 1+177, COVID 155 = 1+11*14)"
+                )
+            self.fused_cond_dim = int(config["fused_cond_dim"])
+            self.cond_dim = self.fused_cond_dim
+            self.seq_len = 1
+            self.mapping_noise = nn.Linear(self.target_dim, self.fused_cond_dim)
+            self.global_condition_projection = None
+        else:
+            self.fused_cond_dim = None
+            self.cond_dim = config.get("input_vars", config["cond_dim"])
+            self.seq_len = config.get("seq_len", 1)
+            self.mapping_noise = None
+            self.global_condition_projection = nn.Linear(
+                self.target_dim + 1, self.channels
+            )
 
         self.diffusion_embedding = DiffusionEmbedding(
             num_steps=config["num_steps"],
             embedding_dim=config["diffusion_embedding_dim"],
         )
-
-        self.token_emb_dim = config["token_emb_dim"] if config["mixed"] else 1
-        # inputdim = 2 * self.token_emb_dim
-        inputdim = 1
-
-        self.input_projection = Conv1d_with_init(inputdim, self.channels, 1)
-        # self.output_projection1 = nn.Linear(self.cond_dim, self.hidden_dim)
-        # self.output_projection2 = nn.Linear(self.hidden_dim, self.hidden_dim)
+        self.input_projection = Conv1d_with_init(1, self.channels, 1)
         self.output_projection1 = Conv1d_with_init(self.channels, self.channels, 1)
         self.output_projection2 = Conv1d_with_init(self.channels, 1, 1)
         self.output_projection3 = nn.Linear(self.cond_dim, self.hidden_dim)
@@ -1281,30 +1300,65 @@ class diff_CSDI(nn.Module):
                 ResidualBlock(
                     side_dim=config["side_dim"],
                     channels=self.channels,
-                    cond_dim = self.cond_dim,
+                    cond_dim=self.cond_dim,
                     diffusion_embedding_dim=config["diffusion_embedding_dim"],
                     nheads=config["nheads"],
-                    state_dim = self.state_dim,
+                    state_dim=self.state_dim,
                 )
                 for _ in range(config["layers"])
             ]
         )
 
-    def forward(self, x, cond_info, diffusion_step):
-        x = torch.unsqueeze(x, dim=-1)
-        B, inputdim, cond_dim, L = x.shape
-        x = x.reshape(B, inputdim, cond_dim*L)
+    def _fused_cond_tensor(self, treatment, x_seq, noisy_target):
+        """Downloads-style: [T, flatten(X)] plus Linear(noisy_y) in the same width, then L=1."""
+        B = x_seq.shape[0]
+        x_flat = x_seq.reshape(B, -1)
+        expected_cov = self.fused_cond_dim - 1
+        if x_flat.shape[1] != expected_cov:
+            raise ValueError(
+                f"fused_add: need flatten(x_seq) dim {expected_cov} "
+                f"({self.fused_cond_dim} fused_cond_dim - 1 treatment), got {x_flat.shape[1]}"
+            )
+        cond_obs = torch.cat([treatment.reshape(B, 1), x_flat], dim=-1)
+        noise_emb = self.mapping_noise(noisy_target)
+        fused = cond_obs + noise_emb
+        return fused.unsqueeze(-1)
+
+    def forward(self, x_seq, treatment, noisy_target, diffusion_step):
+        B = x_seq.shape[0]
+        if self.conditioning == "fused_add":
+            x_spatial = self._fused_cond_tensor(treatment, x_seq, noisy_target)
+            cond_dim, L = self.fused_cond_dim, 1
+        else:
+            x_spatial = x_seq
+            cond_dim, L = x_spatial.shape[1], x_spatial.shape[2]
+            if cond_dim != self.cond_dim:
+                raise ValueError(
+                    f"Expected input_vars={self.cond_dim}, got {cond_dim}."
+                )
+            if L != self.seq_len:
+                raise ValueError(f"Expected seq_len={self.seq_len}, got {L}.")
+
+        x = x_spatial.unsqueeze(1)
+        x = x.reshape(B, 1, cond_dim * L)
         x = self.input_projection(x)
         x = F.leaky_relu(x, negative_slope=0.01)
         x = x.reshape(B, self.channels, cond_dim, L)
+
+        if self.conditioning == "global_broadcast":
+            global_cond = torch.cat([treatment.reshape(B, 1), noisy_target], dim=1)
+            global_cond = self.global_condition_projection(global_cond).unsqueeze(
+                -1
+            ).unsqueeze(-1)
+            x = x + global_cond
 
         diffusion_emb = self.diffusion_embedding(diffusion_step)
 
         skip = []
         for layer in self.residual_layers:
-            x, skip_connection = layer(x, cond_info, diffusion_emb)
+            x, skip_connection = layer(x, diffusion_emb)
             skip.append(skip_connection)
-        
+
         x = torch.sum(torch.stack(skip), dim=0) / math.sqrt(len(self.residual_layers))
 
         x = x.reshape(B, self.channels, cond_dim * L)
@@ -1313,8 +1367,7 @@ class diff_CSDI(nn.Module):
         x = self.output_projection2(x)
         x = F.leaky_relu(x, negative_slope=0.01)
         x = x.reshape(B, cond_dim, L)
-
-        x = x.squeeze(-1)
+        x = x.mean(dim=-1)
         x = self.output_projection3(x)
 
         y0 = self.y0_layer(x)
@@ -1333,7 +1386,7 @@ class diff_CSDI(nn.Module):
 class ResidualBlock(nn.Module):
     def __init__(self, side_dim, channels, cond_dim, diffusion_embedding_dim, nheads, state_dim):
         super().__init__()
-        self.diffusion_projection = nn.Linear(diffusion_embedding_dim, cond_dim)
+        self.diffusion_projection = nn.Linear(diffusion_embedding_dim, channels)
         self.cond_projection = Conv1d_with_init(side_dim, 2 * channels, 1)
         self.mid_projection = Conv1d_with_init(channels, 2 * channels, 1)
         self.output_projection = Conv1d_with_init(channels, 2 * channels, 1)
@@ -1362,22 +1415,19 @@ class ResidualBlock(nn.Module):
         return y
 
 
-    def forward(self, x, cond_info, diffusion_emb):
-        # B, cond_dim = x.shape
+    def forward(self, x, diffusion_emb):
         B, channel, cond_dim, L = x.shape
         base_shape = x.shape
         x = x.reshape(B, channel, cond_dim*L)
 
-        diffusion_emb = self.diffusion_projection(diffusion_emb).unsqueeze(1)
+        diffusion_emb = self.diffusion_projection(diffusion_emb).unsqueeze(-1)
+        diffusion_emb = diffusion_emb.expand(-1, -1, cond_dim * L)
 
         y = x + diffusion_emb
 
         y = self.forward_time(y, base_shape)
         y = self.forward_feature(y, base_shape)  
         y = self.mid_projection(y)
-        # cond_info = self.cond_projection(cond_info)
-
-        y = y
         gate, filter = torch.chunk(y, 2, dim=1)
         y = torch.sigmoid(gate) * torch.tanh(filter)
 

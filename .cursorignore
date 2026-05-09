@@ -1,0 +1,47 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__
+*.pyc
+
+# Logs
+logs
+log
+wandb
+save_diffs4
+
+
+# Outputs
+outputs
+results
+runs
+tmp
+
+# Checkpoints
+checkpoints
+ckpts
+*.pt
+*.pth
+*.ckpt
+*.bin
+*.safetensors
+
+# Numpy / tensors
+*.npy
+*.npz
+
+# Images
+*.png
+*.jpg
+*.jpeg
+
+# Build
+dist
+build
+
+# Cache
+.cache
+
+.vscode

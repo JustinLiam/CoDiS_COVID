@@ -2,40 +2,16 @@ import numpy as np
 import torch
 import torch.nn as nn
 from src.diff_model import diff_CSDI
-import yaml
 
 
 class CSDI_base(nn.Module):
     def __init__(self, target_dim, config, device):
-        # keep the __init__ the same
         super().__init__()
         self.device = device
-        self.target_dim = config["train"]["batch_size"]
-        
-
-        self.emb_time_dim = config["model"]["timeemb"]
-        self.emb_feature_dim = config["model"]["featureemb"]
-
-        self.is_unconditional = config["model"]["is_unconditional"]
-        self.target_strategy = config["model"]["target_strategy"]
-
-        self.emb_total_dim = self.emb_time_dim + self.emb_feature_dim
-
-        self.cond_dim = config["diffusion"]["cond_dim"]
-        self.mapping_noise = nn.Linear(2, self.cond_dim)
-
-        if self.is_unconditional == False:
-            self.emb_total_dim += 1
-
-        self.embed_layer = nn.Embedding(
-            num_embeddings=self.target_dim, embedding_dim=self.emb_feature_dim
-        )
+        self.target_dim = config["diffusion"].get("target_dim", target_dim)
 
         config_diff = config["diffusion"]
-        config_diff["side_dim"] = self.emb_total_dim
-
-        input_dim = 1 if self.is_unconditional == True else 2
-        self.diffmodel = diff_CSDI(config_diff, input_dim)
+        self.diffmodel = diff_CSDI(config_diff, inputdim=self.target_dim)
 
         self.num_steps = config_diff["num_steps"]
         if config_diff["schedule"] == "quad":
@@ -54,9 +30,7 @@ class CSDI_base(nn.Module):
 
         self.alpha_hat = 1 - self.beta
         self.alpha = np.cumprod(self.alpha_hat)
-        self.alpha_torch = (
-            torch.tensor(self.alpha).float().to(self.device).unsqueeze(1).unsqueeze(1)
-        )
+        self.alpha_torch = torch.tensor(self.alpha).float().to(self.device).unsqueeze(1)
 
     def time_embedding(self, pos, d_model=128):
         pe = torch.zeros(pos.shape[0], pos.shape[1], d_model).to(self.device)
@@ -68,185 +42,145 @@ class CSDI_base(nn.Module):
         pe[:, :, 1::2] = torch.cos(position * div_term)
         return pe
 
-    def get_randmask(self, observed_mask):
-        rand_for_mask = torch.rand_like(observed_mask) * observed_mask
-        rand_for_mask = rand_for_mask.reshape(len(rand_for_mask), -1)
-
-        for i in range(len(observed_mask)):
-            sample_ratio = 0.5
-            num_observed = observed_mask[i].sum().item()
-            num_masked = round(num_observed * sample_ratio)
-            rand_for_mask[i][rand_for_mask[i].topk(num_masked).indices] = -1
-        cond_mask = (rand_for_mask > 0).reshape(observed_mask.shape).float()
-        return cond_mask
-
-    def get_side_info(self, observed_tp, cond_mask):
-        B, K, L = cond_mask.shape
-
-        side_info = cond_mask
-        
-        return side_info
-
     def calc_loss_valid(
-        self, observed_data, cond_mask, observed_mask, side_info, is_train
+        self,
+        treatment,
+        outcomes,
+        outcomes_mask,
+        x_seq,
+        is_train,
+        propnet,
+        x_prop=None,
     ):
         loss_sum = 0
         for t in range(self.num_steps):
             loss = self.calc_loss(
-                observed_data, cond_mask, observed_mask, side_info, is_train, set_t=t
+                treatment,
+                outcomes,
+                outcomes_mask,
+                x_seq,
+                is_train,
+                propnet=propnet,
+                set_t=t,
+                x_prop=x_prop,
             )
             loss_sum += loss.detach()
         return loss_sum / self.num_steps
 
     def calc_loss(
-        self, observed_data, cond_mask, gt_mask, side_info, is_train, set_t=-1, propnet=None
+        self,
+        treatment,
+        outcomes,
+        outcomes_mask,
+        x_seq,
+        is_train,
+        propnet=None,
+        set_t=-1,
+        x_prop=None,
     ):
-        B, K, L = observed_data.shape
+        B = outcomes.shape[0]
         if is_train != 1:
             t = (torch.ones(B) * set_t).long().to(self.device)
         else:
             t = torch.randint(0, self.num_steps, [B]).to(self.device)
         current_alpha = self.alpha_torch[t]
-        noise = torch.randn_like(observed_data[:, :, 1:3])
-        noisy_data = (current_alpha**0.5) * observed_data[:, :, 1:3] + (
+        noise = torch.randn_like(outcomes)
+        noisy_data = (current_alpha**0.5) * outcomes + (
             1.0 - current_alpha
         ) ** 0.5 * noise
-        # total_input = self.set_input_to_diffmodel(noisy_data, observed_data, cond_mask)
 
-        a = observed_data[:,:,0].unsqueeze(2)
-        x = observed_data[:,:,5:]
-        cond_obs = torch.cat([a,x], dim=2)
-        # print("condition observation shape: ",cond_obs.shape)
+        # diff_CSDI conditions on covariate sequence x_seq and global (treatment, noisy_target); see diff_model.diff_CSDI.forward
+        predicted = self.diffmodel(
+            x_seq=x_seq,
+            treatment=treatment,
+            noisy_target=noisy_data,
+            diffusion_step=t,
+        ).to(self.device)
 
-        noisy_target = self.mapping_noise(noisy_data) 
-        diff_input = cond_obs + noisy_target # dim = 256*1*178
+        residual = (noise - predicted) * outcomes_mask
+        num_eval = outcomes_mask.sum()
 
-        predicted = self.diffmodel(diff_input, cond_obs, t).to(self.device)
-        # predicted = self.diffmodel(cond_obs, cond_obs, t).to(self.device)
-
-        target_mask = gt_mask - cond_mask
-        target_mask = target_mask.squeeze(1)[:,1:3]
-
-        noise = noise.squeeze(1)
-        residual = (noise - predicted) * target_mask
-        num_eval = target_mask.sum()
-
-        x_batch = observed_data[:, :, 5:]
-        if len(x_batch.shape) > 2: 
-            x_batch = x_batch.squeeze() 
-        if len(x_batch.shape) < 2:
-            x_batch = x_batch.unsqueeze(1)
-        t_batch = observed_data[:, :, 0].squeeze()
-
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        # propnet = propnet.to(device)
-
+        x_batch = x_prop if x_prop is not None else x_seq.reshape(B, -1)
+        t_batch = treatment.reshape(-1)
         pi_hat = propnet.forward(x_batch.float())
-
         weights = (t_batch / pi_hat[:, 1]) + ((1 - t_batch) / pi_hat[:, 0])
-        weights = weights.reshape(-1, 1, 1) 
-        # Clip weights for stable training
-        weights = torch.clamp(weights, min=0.1, max=0.9)
+        weights = torch.clamp(weights.reshape(-1, 1), min=0.1, max=0.9)
+        # weights = torch.clamp(weights.reshape(-1, 1), min=0.1)
 
-        loss = (weights * (residual ** 2)).sum() / (num_eval if num_eval > 0 else 1)
+        loss = (weights * (residual**2)).sum() / (num_eval if num_eval > 0 else 1)
         return loss
 
-    def set_input_to_diffmodel(self, noisy_data, observed_data, cond_mask):
-        if self.is_unconditional == True:
-            total_input = noisy_data.unsqueeze(1)
-        else:
-            a = observed_data[:,:,0].unsqueeze(2)
-            x = observed_data[:,:,5:]
-            cond_obs = torch.cat([a,x], dim=2) # 在第三个维度上连接 a 和 x B*K*1 和 B*K*177
-            noisy_target = self.mapping_noise(noisy_data) 
-            total_input = cond_obs + noisy_target
-        return total_input
-
-    def impute(self, observed_data, cond_mask, side_info, n_samples):
-        B, K, L = observed_data.shape 
-
+    def impute(self, treatment, outcomes, x_seq, n_samples):
+        B = outcomes.shape[0]
         imputed_samples = torch.zeros(B, n_samples, 2).to(self.device)
 
         for i in range(n_samples):
-            generated_target = observed_data[:,:,1:3]
+            current_sample = torch.randn_like(outcomes)
 
-            current_sample = torch.randn_like(generated_target)
+            for t_step in range(self.num_steps - 1, -1, -1):
+                t_batch = torch.full((B,), t_step, device=self.device, dtype=torch.long)
+                predicted = self.diffmodel(
+                    x_seq=x_seq,
+                    treatment=treatment,
+                    noisy_target=current_sample,
+                    diffusion_step=t_batch,
+                ).to(self.device)
 
-            for t in range(self.num_steps - 1, -1, -1):
-                a = observed_data[:,:,0].unsqueeze(2)
-                x = observed_data[:,:,5:]
-                cond_obs = torch.cat([a,x], dim=2)
-
-                noisy_target = self.mapping_noise(current_sample) 
-                diff_input = cond_obs + noisy_target
- 
-                predicted = self.diffmodel(diff_input, cond_obs, torch.tensor([t])).to(self.device)
-                # predicted = self.diffmodel(cond_obs, cond_obs, torch.tensor([t])).to(self.device)
-
-                coeff1 = 1 / self.alpha_hat[t] ** 0.5
-                coeff2 = (1 - self.alpha_hat[t]) / (1 - self.alpha[t]) ** 0.5
-           
-                current_sample = current_sample.squeeze(1)
-
+                coeff1 = 1 / self.alpha_hat[t_step] ** 0.5
+                coeff2 = (1 - self.alpha_hat[t_step]) / (1 - self.alpha[t_step]) ** 0.5
                 current_sample = coeff1 * (current_sample - coeff2 * predicted)
 
-                if t > 0:
+                if t_step > 0:
                     noise = torch.randn_like(current_sample)
                     sigma = (
-                        (1.0 - self.alpha[t - 1]) / (1.0 - self.alpha[t]) * self.beta[t]
+                        (1.0 - self.alpha[t_step - 1])
+                        / (1.0 - self.alpha[t_step])
+                        * self.beta[t_step]
                     ) ** 0.5
                     current_sample += sigma * noise
 
-                current_sample = current_sample.unsqueeze(1)
-
-            current_sample = current_sample.squeeze(1)
             imputed_samples[:, i] = current_sample.detach()
         return imputed_samples
 
     def forward(self, batch, is_train=1, propnet = None):
         (
-            observed_data,
-            observed_mask,
+            treatment,
+            outcomes,
+            mu,
+            x_seq,
+            x_mask,
+            outcomes_mask,
             observed_tp,
-            gt_mask,
-            for_pattern_mask,
-            _,
+            x_prop,
         ) = self.process_data(batch)
 
-        if is_train == 0:
-            cond_mask = gt_mask.clone()
-        else:
-            cond_mask = gt_mask.clone()
-            
-            cond_mask[:, :, 1] = 0
-            cond_mask[:, :, 2] = 0
-
-        side_info = self.get_side_info(observed_tp, cond_mask)
-
-
-        loss_func = self.calc_loss(observed_data, cond_mask, gt_mask, side_info, is_train, set_t=-1, propnet=propnet) if is_train == 1 else self.calc_loss_valid
-
-        return loss_func
+        return self.calc_loss(
+            treatment=treatment,
+            outcomes=outcomes,
+            outcomes_mask=outcomes_mask,
+            x_seq=x_seq,
+            is_train=is_train,
+            propnet=propnet,
+            set_t=-1,
+            x_prop=x_prop,
+        )
 
     def evaluate(self, batch, n_samples):
         (
-            observed_data,
-            observed_mask,
+            treatment,
+            outcomes,
+            mu,
+            x_seq,
+            x_mask,
+            outcomes_mask,
             observed_tp,
-            gt_mask,
-            _,
-            cut_length,
+            x_prop,
         ) = self.process_data(batch)
 
         with torch.no_grad():
-            cond_mask = gt_mask
-            cond_mask[:,:,0] = 0
-            target_mask = observed_mask - cond_mask
-            side_info = self.get_side_info(observed_tp, cond_mask)
+            samples = self.impute(treatment, outcomes, x_seq, n_samples)
 
-            samples = self.impute(observed_data, cond_mask, side_info, n_samples)
-
-        return samples, observed_data, target_mask, observed_mask, observed_tp
+        return samples, outcomes, mu, treatment
 
 
 class CoDiS(CSDI_base):
@@ -254,26 +188,26 @@ class CoDiS(CSDI_base):
         super(CoDiS, self).__init__(target_dim, config, device)
 
     def process_data(self, batch):
-        observed_data = batch["observed_data"][:, np.newaxis, :]
-        observed_data = observed_data.to(self.device).float()
-
-        observed_mask = batch["observed_mask"][:, np.newaxis, :]
-        observed_mask = observed_mask.to(self.device).float()
-
+        treatment = batch["treatment"].to(self.device).float()
+        outcomes = batch["outcomes"].to(self.device).float()
+        mu = batch["mu"].to(self.device).float()
+        x_seq = batch["x_seq"].to(self.device).float()
+        x_mask = batch["x_mask"].to(self.device).float()
+        outcomes_mask = batch["outcomes_mask"].to(self.device).float()
         observed_tp = batch["timepoints"].to(self.device).float()
-
-        gt_mask = batch["gt_mask"][:, np.newaxis, :]
-
-        gt_mask = gt_mask.to(self.device).float()
-
-        cut_length = torch.zeros(len(observed_data)).long().to(self.device)
-        for_pattern_mask = observed_mask
+        x_prop = (
+            batch["x_prop"].to(self.device).float()
+            if "x_prop" in batch
+            else None
+        )
 
         return (
-            observed_data,
-            observed_mask,
+            treatment,
+            outcomes,
+            mu,
+            x_seq,
+            x_mask,
+            outcomes_mask,
             observed_tp,
-            gt_mask,
-            for_pattern_mask,
-            cut_length,
+            x_prop,
         )

@@ -44,7 +44,7 @@ def train(
     optimizer = AdamW(
         model.parameters(),
         lr=config["lr"],
-        weight_decay=0.01,
+        weight_decay=config["weight_decay"],
         betas=(0.9, 0.999),
         eps=1e-8
     )
@@ -96,7 +96,7 @@ def train(
             print('Epoch:', epoch_no)
 
             model.eval()
-            val_nsample = 50
+            val_nsample = 100
 
 
             pehe_val = AverageMeter()
@@ -107,27 +107,25 @@ def train(
                 with tqdm(valid_loader, mininterval=5.0, maxinterval=50.0) as it:
                     for batch_no, valid_batch in enumerate(it, start=1):
                         output = model.evaluate(valid_batch, val_nsample)
-                        samples, observed_data, target_mask, observed_mask, observed_tp = output
+                        samples, outcomes, mu, treatment = output
                         samples_median = torch.median(samples, dim=1).values
-                        
-                        obs_data = observed_data.squeeze(1)
-                        true_ite = obs_data[:, 3] - obs_data[:, 4]
-                        
+
+                        true_ite = mu[:, 0] - mu[:, 1]
                         est_data = samples_median
 
                         pred_y0 = est_data[:, 0]
                         pred_y1 = est_data[:, 1]
 
-                        diff_y0 = np.mean((pred_y0.cpu().numpy()-obs_data[:, 1].cpu().numpy())**2)
-                        y0_val.update(diff_y0, obs_data.size(0))    
-                        diff_y1 = np.mean((pred_y1.cpu().numpy()-obs_data[:, 2].cpu().numpy())**2)
-                        y1_val.update(diff_y1, obs_data.size(0)) 
+                        diff_y0 = np.mean((pred_y0.cpu().numpy() - outcomes[:, 0].cpu().numpy()) ** 2)
+                        y0_val.update(diff_y0, outcomes.size(0))
+                        diff_y1 = np.mean((pred_y1.cpu().numpy() - outcomes[:, 1].cpu().numpy()) ** 2)
+                        y1_val.update(diff_y1, outcomes.size(0))
 
                         est_ite = pred_y0 - pred_y1
 
                         diff_ite = np.mean((true_ite.cpu().numpy()-est_ite.cpu().numpy())**2)
 
-                        pehe_val.update(diff_ite, obs_data.size(0))    
+                        pehe_val.update(diff_ite, outcomes.size(0))
                     
                     print('====================================')
                     print('##### End evaluation!!')
@@ -164,7 +162,7 @@ def evaluate(model, test_loader, nsample=100, scaler=1, mean_scaler=0, foldernam
             for batch_no, test_batch in enumerate(it, start=1):
 
                 output = model.evaluate(test_batch, nsample) 
-                samples, observed_data, target_mask, observed_mask, observed_tp = output
+                samples, outcomes, mu, treatment = output
                 print('samples.shape', samples.shape)
 
                 y0_samples.append(samples[:,:,0])
@@ -172,27 +170,26 @@ def evaluate(model, test_loader, nsample=100, scaler=1, mean_scaler=0, foldernam
 
                 samples_median = torch.median(samples, dim=1).values
                 
-                obs_data = observed_data.squeeze(1)
-                true_ite = obs_data[:, 3] - obs_data[:, 4]
+                true_ite = mu[:, 0] - mu[:, 1]
                 
                 est_data = samples_median
 
                 pred_y0 = est_data[:, 0]
                 pred_y1 = est_data[:, 1]
 
-                diff_y0 = np.mean((pred_y0.cpu().numpy()-obs_data[:, 1].cpu().numpy())**2)
-                y0_test.update(diff_y0, obs_data.size(0))    
-                diff_y1 = np.mean((pred_y1.cpu().numpy()-obs_data[:, 2].cpu().numpy())**2)
-                y1_test.update(diff_y1, obs_data.size(0)) 
+                diff_y0 = np.mean((pred_y0.cpu().numpy() - outcomes[:, 0].cpu().numpy()) ** 2)
+                y0_test.update(diff_y0, outcomes.size(0))
+                diff_y1 = np.mean((pred_y1.cpu().numpy() - outcomes[:, 1].cpu().numpy()) ** 2)
+                y1_test.update(diff_y1, outcomes.size(0))
 
-                y0_true_list.append(obs_data[:, 1])
-                y1_true_list.append(obs_data[:, 2])
+                y0_true_list.append(outcomes[:, 0])
+                y1_true_list.append(outcomes[:, 1])
 
                 est_ite = pred_y0 - pred_y1
 
                 diff_ite = np.mean((true_ite.cpu().numpy()-est_ite.cpu().numpy())**2)
 
-                pehe_test.update(diff_ite, obs_data.size(0))    
+                pehe_test.update(diff_ite, outcomes.size(0))
 
             print('====================================')
             
@@ -217,6 +214,7 @@ def evaluate(model, test_loader, nsample=100, scaler=1, mean_scaler=0, foldernam
             # wandb.log({"prob0": prob_0, "prob1": prob_1})
 
             try:
+                wandb_log = {}
                 pred_samples_y0 = torch.cat(y0_samples, dim=0)
                 pred_samples_y1 = torch.cat(y1_samples, dim=0)
                 truth_y0 = torch.cat(y0_true_list, dim=0)
@@ -243,6 +241,7 @@ def evaluate(model, test_loader, nsample=100, scaler=1, mean_scaler=0, foldernam
                 wandb_log["median_width0_TEST(0.99)"] = median_width_0_99
                 wandb_log["prob1_TEST(0.99)"] = prob_1_99
                 wandb_log["median_width1_TEST(0.99)"] = median_width_1_99
+                wandb.log(wandb_log)
 
             except Exception as e:
                 print(f"Error during test set uncertainty calculation: {e}")

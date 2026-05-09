@@ -9,10 +9,8 @@ train:
   valid_epoch_interval: 50
 
 diffusion:
-  # Conditioning: "global_broadcast" = (T, noisy y) -> channel bias (default, COVID-style).
-  # "fused_add" = Downloads-style: concat [T, flatten(X)] + Linear(noisy_y), same width, seq_len=1 backbone.
-  conditioning: "global_broadcast"
-  # fused_cond_dim: 178  # required if conditioning is "fused_add" (ACIC: 1 + 177 covariates)
+  conditioning: "fused_add"
+  fused_cond_dim: 178
   layers: 6
   channels: 64
   input_vars: 177

@@ -1,0 +1,36 @@
+dataset:
+  data_name: "covid"
+
+train:
+  epochs: 500
+  batch_size: 128
+  lr: 0.0001
+  weight_decay: 0.002
+  valid_epoch_interval: 50
+
+diffusion:
+  conditioning: "global_broadcast"
+  # fused_cond_dim: 155  # if conditioning is "fused_add": 1 + 11*14
+  layers: 6
+  channels: 64
+  input_vars: 11
+  cond_dim: 11
+  seq_len: 14
+  hidden_dim: 256
+  target_dim: 2
+  side_dim: 33
+  nheads: 2
+  diffusion_embedding_dim: 128
+  beta_start: 0.0001
+  beta_end: 0.2
+  num_steps: 100
+  schedule: "quad"
+  mixed: False
+  state_dim: 64
+
+model:
+  is_unconditional: 0
+  timeemb: 32
+  featureemb: 32
+  target_strategy: "random"
+  mixed: False

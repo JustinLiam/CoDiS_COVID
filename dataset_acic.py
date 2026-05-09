@@ -118,15 +118,32 @@ class tabular_dataset(Dataset):
         else:
             self.use_index_list = use_index_list
 
+        self._n_cov = int(self.observed_values.shape[1] - 5)
+
     def __getitem__(self, org_index):
         index = self.use_index_list[org_index]
-        s = {
-            "observed_data": self.observed_values[index],
-            "observed_mask": self.observed_masks[index],
-            "gt_mask": self.gt_masks[index], # ground truth mask
-            "timepoints": np.arange(self.eval_length),
+        row = self.observed_values[index].astype("float32")
+        gtm = self.gt_masks[index].astype("float32")
+        n_cov = self._n_cov
+
+        treatment = row[0]
+        outcomes = row[1:3]
+        mu = row[3:5]
+        x_flat = row[5 : 5 + n_cov]
+        x_seq = x_flat.reshape(n_cov, 1)
+        x_mask = gtm[5 : 5 + n_cov].reshape(n_cov, 1)
+
+        return {
+            "treatment": treatment,
+            "outcomes": outcomes,
+            "mu": mu,
+            "x_seq": x_seq,
+            "x_mask": x_mask,
+            "treatment_mask": gtm[0],
+            "outcomes_mask": gtm[1:3],
+            "mu_mask": gtm[3:5],
+            "timepoints": np.arange(1, dtype=np.int64),
         }
-        return s
 
     def __len__(self):
         return len(self.use_index_list)

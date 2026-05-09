@@ -1,7 +1,9 @@
 
 
-CUDA_VISIBLE_DEVICES=0 python exe_acic.py --config acic2018.yaml --current_id "00ea30e866f141d9880d5824a361a76a" --nfold "1"
-
+CUDA_VISIBLE_DEVICES=0 python exe_acic.py --config acic2018.yaml --current_id "00ea30e866f141d9880d5824a361a76a"
+CUDA_VISIBLE_DEVICES=0 python exe_acic.py --config acic2018_fused_add.yaml --current_id "00ea30e866f141d9880d5824a361a76a"
+CUDA_VISIBLE_DEVICES=1 python exe_covid.py --config covid.yaml --current_id "covid_causal_14d"
+CUDA_VISIBLE_DEVICES=1 python exe_covid.py --config covid_fused_add.yaml --current_id "covid_causal_14d"
 
 """current_ids=(
     "00ea30e866f141d9880d5824a361a76a"

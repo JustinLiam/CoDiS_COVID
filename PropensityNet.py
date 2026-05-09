@@ -28,7 +28,7 @@ DEFAULT_NONLIN = "elu"
 DEFAULT_STEP_SIZE = 0.0001
 DEFAULT_N_ITER = 10000
 DEFAULT_BATCH_SIZE = 100
-DEFAULT_PENALTY_L2 = 1e-4
+DEFAULT_PENALTY_L2 = 5e-4
 DEFAULT_PENALTY_DISC = 0
 DEFAULT_PENALTY_ORTHOGONAL = 1 / 100
 DEFAULT_AVG_OBJECTIVE = True
@@ -373,6 +373,9 @@ def load_data(dataset_name = 'acic', current_id='0'):
     if dataset_name == 'ihdp':
             dataset_path = "./data/ihdp/ihdp_norm_data/" + current_id + ".csv"
             print('dataset_path', dataset_path)
+    if dataset_name == 'covid':
+            dataset_path = "./data/covid-19/covid_norm_data/" + current_id + ".csv"
+            print('dataset_path', dataset_path)
     
     # load data
     load_csv = pd.read_csv(dataset_path, sep = ',', decimal = ',')
@@ -387,8 +390,24 @@ def load_data(dataset_name = 'acic', current_id='0'):
         x_dim = 82
     if dataset_name == 'ihdp':
         x_dim = 25
-    
-    x = load_table[:, 5:] # 0-4 collum is not x
+    if dataset_name == 'covid':
+        # Build multivariate sequence features to align with main model:
+        # x_seq = (B, 11, 14) = [pop_size(repeated 14x), 10 dynamic vars over 14 days]
+        pop = load_table[:, 5:6]
+        dynamic = load_table[:, 6:]
+        expected_dynamic = 14 * 10
+        if dynamic.shape[1] != expected_dynamic:
+            raise ValueError(
+                f"COVID dynamic feature size mismatch: expected {expected_dynamic}, got {dynamic.shape[1]}"
+            )
+        dynamic = dynamic.reshape(-1, 14, 10).transpose(0, 2, 1)
+        pop_seq = np.repeat(pop, 14, axis=1)[:, None, :]
+        x_seq = np.concatenate([pop_seq, dynamic], axis=1)
+        x = x_seq.reshape(x_seq.shape[0], -1)
+        x_dim = x.shape[1]
+    else:
+        x = load_table[:, 5:] # 0-4 collum is not x
+
     t = load_table[:, 0].reshape(-1, 1)
 
 
@@ -423,8 +442,8 @@ def load_data(dataset_name = 'acic', current_id='0'):
         p_pred = pi.forward(torch.from_numpy(x).float())
 
     else:
-        x = x.float().to(device)
-        t = t.long().to(device)
+        x = x.float().to(DEVICE)
+        t = t.long().to(DEVICE)
 
         pi.fit(x, t)
 
