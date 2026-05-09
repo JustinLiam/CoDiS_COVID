@@ -1184,7 +1184,7 @@ class S4Layer(nn.Module):
         super().__init__()
         self.s4_layer = S4(d_model=features,
                            d_state=N,
-                           l_max=251,
+                           l_max=lmax,
                            bidirectional=True)
 
         self.norm_layer = nn.LayerNorm(features) if layer_norm else nn.Identity()
@@ -1285,7 +1285,7 @@ class diff_CSDI(nn.Module):
         self.input_projection = Conv1d_with_init(1, self.channels, 1)
         self.output_projection1 = Conv1d_with_init(self.channels, self.channels, 1)
         self.output_projection2 = Conv1d_with_init(self.channels, 1, 1)
-        self.output_projection3 = nn.Linear(self.cond_dim, self.hidden_dim)
+        self.output_projection3 = nn.Linear(self.cond_dim * self.seq_len, self.hidden_dim)
 
         self.y0_layer = nn.Linear(self.hidden_dim, self.hidden_dim)
         self.y1_layer = nn.Linear(self.hidden_dim, self.hidden_dim)
@@ -1298,6 +1298,7 @@ class diff_CSDI(nn.Module):
         self.residual_layers = nn.ModuleList(
             [
                 ResidualBlock(
+                    seq_len=config["seq_len"],
                     side_dim=config["side_dim"],
                     channels=self.channels,
                     cond_dim=self.cond_dim,
@@ -1367,8 +1368,10 @@ class diff_CSDI(nn.Module):
         x = self.output_projection2(x)
         x = F.leaky_relu(x, negative_slope=0.01)
         x = x.reshape(B, cond_dim, L)
-        x = x.mean(dim=-1)
-        x = self.output_projection3(x)
+        # x = x.mean(dim=-1)
+        x = x.reshape(B, -1) # 形状变为 [B, cond_dim * L]
+        x = self.output_projection3(x) 
+        # x = self.output_projection3(x)
 
         y0 = self.y0_layer(x)
         # y0 = F.relu(y0)
@@ -1384,14 +1387,14 @@ class diff_CSDI(nn.Module):
 
 
 class ResidualBlock(nn.Module):
-    def __init__(self, side_dim, channels, cond_dim, diffusion_embedding_dim, nheads, state_dim):
+    def __init__(self, seq_len, side_dim, channels, cond_dim, diffusion_embedding_dim, nheads, state_dim):
         super().__init__()
         self.diffusion_projection = nn.Linear(diffusion_embedding_dim, channels)
         self.cond_projection = Conv1d_with_init(side_dim, 2 * channels, 1)
         self.mid_projection = Conv1d_with_init(channels, 2 * channels, 1)
         self.output_projection = Conv1d_with_init(channels, 2 * channels, 1)
         self.output_projection_for_x = nn.Linear(cond_dim, 2)
-        self.time_layer = S4Layer(features=channels, lmax=100, N=state_dim)
+        self.time_layer = S4Layer(features=channels, lmax=seq_len, N=state_dim)
         self.feature_layer = get_torch_trans(heads=nheads, layers=1, channels=channels)
 
     def forward_time(self, y, base_shape):

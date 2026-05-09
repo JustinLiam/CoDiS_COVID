@@ -2,9 +2,9 @@ dataset:
   data_name: "covid"
 
 train:
-  epochs: 500
+  epochs: 300
   batch_size: 128
-  lr: 0.0001
+  lr: 0.0002
   weight_decay: 0.002
   valid_epoch_interval: 50
 
@@ -22,8 +22,8 @@ diffusion:
   nheads: 2
   diffusion_embedding_dim: 128
   beta_start: 0.0001
-  beta_end: 0.2
-  num_steps: 100
+  beta_end: 0.01
+  num_steps: 300
   schedule: "quad"
   mixed: False
   state_dim: 64
