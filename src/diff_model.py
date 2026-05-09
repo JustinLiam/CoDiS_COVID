@@ -1394,17 +1394,31 @@ class ResidualBlock(nn.Module):
         self.mid_projection = Conv1d_with_init(channels, 2 * channels, 1)
         self.output_projection = Conv1d_with_init(channels, 2 * channels, 1)
         self.output_projection_for_x = nn.Linear(cond_dim, 2)
-        self.time_layer = S4Layer(features=channels, lmax=seq_len, N=state_dim)
+        # self.time_layer = S4Layer(features=channels, lmax=seq_len, N=state_dim)
+        self.time_layer = S4Layer(features=channels * cond_dim, lmax=14, N=state_dim)
         self.feature_layer = get_torch_trans(heads=nheads, layers=1, channels=channels)
 
     def forward_time(self, y, base_shape):
-        B, channel, K, L = base_shape
-        # if L == 1:
-        #     return y
-        y = y.reshape(B, channel, K, L).permute(0, 2, 1, 3).reshape(B * K, channel, L)
+        B, channel, K, L = base_shape  # 例如 K=11, L=14
+        
+        # 🚨 修改 reshape 方式：融合 channel 和 K
+        # 形状变为 [B, channel * K, L]
+        y = y.reshape(B, channel * K, L)
+        
+        # 送入多变量 S4 模型
         y = self.time_layer(y.permute(2, 0, 1)).permute(1, 2, 0)
-        y = y.reshape(B, K, channel, L).permute(0, 2, 1, 3).reshape(B, channel, K * L)
+        
+        # 计算完后再恢复回原来的形状，准备送入后续网络
+        y = y.reshape(B, channel, K, L)
         return y
+        
+        # B, channel, K, L = base_shape
+        # # if L == 1:
+        # #     return y
+        # y = y.reshape(B, channel, K, L).permute(0, 2, 1, 3).reshape(B * K, channel, L)
+        # y = self.time_layer(y.permute(2, 0, 1)).permute(1, 2, 0)
+        # y = y.reshape(B, K, channel, L).permute(0, 2, 1, 3).reshape(B, channel, K * L)
+        # return y
 
 
 

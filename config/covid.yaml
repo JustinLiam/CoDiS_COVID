@@ -2,7 +2,7 @@ dataset:
   data_name: "covid"
 
 train:
-  epochs: 300
+  epochs: 500
   batch_size: 128
   lr: 0.0002
   weight_decay: 0.002
