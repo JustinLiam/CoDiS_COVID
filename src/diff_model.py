@@ -550,7 +550,7 @@ class SSKernelNPLR(nn.Module):
             trainable=None,
             lr=None,
             tie_state=False,
-            length_correction=True,
+            length_correction=False,
             verbose=False,
     ):
         """
@@ -967,8 +967,8 @@ class HippoSSKernel(nn.Module):
             measure="legs",
             rank=1,
             channels=1,  # 1-dim to C-dim map; can think of C as having separate "heads"
-            dt_min=0.001,
-            dt_max=0.1,
+            dt_min=0.01,
+            dt_max=0.5,
             trainable=None,  # Dictionary of options to train various HiPPO parameters
             lr=None,  # Hook to set LR of hippo parameters differently
             length_correction=True,
