@@ -1329,6 +1329,12 @@ class diff_CSDI(nn.Module):
         B = x_seq.shape[0]
         if self.conditioning == "fused_add":
             x_spatial = self._fused_cond_tensor(treatment, x_seq, noisy_target)
+
+            
+            # 原代码: x_spatial 形状是 [B, 178, 1]， cond_dim, L = self.fused_cond_dim, 1
+            # 新代码: 把特征长度转移到序列时间轴(L)上！
+            # x_spatial = x_spatial.transpose(1, 2)  # 形状变为 [B, 1, 178]
+            # cond_dim, L = 1, self.fused_cond_dim   # cond_dim(K)=1, L=178
             cond_dim, L = self.fused_cond_dim, 1
         else:
             x_spatial = x_seq

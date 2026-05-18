@@ -30,7 +30,7 @@ parser.add_argument("--smoke_test", type=int, default=0, help="1: dataloader/mod
 parser.add_argument(
     "--wandb_mode",
     type=str,
-    default="disabled",
+    default="online",
     choices=["disabled", "online", "offline"],
 )
 args = parser.parse_args()
