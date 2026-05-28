@@ -103,9 +103,11 @@ class CSDI_base(nn.Module):
         x_batch = x_prop if x_prop is not None else x_seq.reshape(B, -1)
         t_batch = treatment.reshape(-1)
         pi_hat = propnet.forward(x_batch.float())
+        pi_hat = torch.clamp(pi_hat, min=0.05, max=0.95)
         weights = (t_batch / pi_hat[:, 1]) + ((1 - t_batch) / pi_hat[:, 0])
-        weights = torch.clamp(weights.reshape(-1, 1), min=0.1, max=0.9)
+        weights = torch.clamp(weights.reshape(-1, 1), min=0.5, max=3.0)
         # weights = torch.clamp(weights.reshape(-1, 1), min=0.1)
+        weights = weights / weights.mean()
 
         loss = (weights * (residual**2)).sum() / (num_eval if num_eval > 0 else 1)
         return loss

@@ -1,5 +1,6 @@
 import os
 import pickle
+from typing import Optional
 
 import numpy as np
 import pandas as pd
@@ -9,12 +10,16 @@ NUM_DAYS = 14
 NUM_DYNAMIC_VARS = 10
 
 
-def process_func(path: str, train: bool = True, current_id: str = "covid_causal_14d"):
+def process_func(path: str, train: bool = True, mask_path: Optional[str] = None):
     data = pd.read_csv(path)
     data.replace("?", np.nan, inplace=True)
     observed_values = data.values.astype("float32")
 
-    load_mask_path = "./data/covid-19/covid_mask/" + current_id + ".csv"
+    load_mask_path = mask_path if mask_path is not None else None
+    if load_mask_path is None:
+        raise ValueError(
+            "mask_path is required for process_func (pass explicit covid_mask CSV path)."
+        )
     print(load_mask_path)
     load_mask = pd.read_csv(load_mask_path).values.astype("float32")
 
@@ -73,19 +78,25 @@ class tabular_dataset(Dataset):
         seed=0,
         train=True,
         current_id="covid_causal_14d",
+        dataset_path: Optional[str] = None,
+        mask_path: Optional[str] = None,
     ):
         np.random.seed(seed)
 
-        dataset_path = "./data/covid-19/covid_norm_data/" + current_id + ".csv"
+        if dataset_path is None:
+            dataset_path = "./data/covid-19/covid_norm_data/" + current_id + ".csv"
+        if mask_path is None:
+            mask_path = "./data/covid-19/covid_mask/" + current_id + ".csv"
         print("dataset_path", dataset_path)
 
+        csv_tag = os.path.splitext(os.path.basename(dataset_path))[0]
         processed_data_path = (
             f"./data/covid-19/missing_ratio-{missing_ratio}_seed-{seed}_"
-            f"current_id-{current_id}_train-{int(train)}.pk"
+            f"csv-{csv_tag}_train-flag-{int(train)}.pk"
         )
 
         if not os.path.isfile(processed_data_path):
-            self.processed = process_func(dataset_path, train=train, current_id=current_id)
+            self.processed = process_func(dataset_path, train=train, mask_path=mask_path)
             with open(processed_data_path, "wb") as f:
                 pickle.dump(self.processed, f)
             print("--------Dataset created--------")
@@ -96,7 +107,7 @@ class tabular_dataset(Dataset):
 
         # Backward-compatibility for old cached format.
         if not isinstance(self.processed, dict):
-            self.processed = process_func(dataset_path, train=train, current_id=current_id)
+            self.processed = process_func(dataset_path, train=train, mask_path=mask_path)
             with open(processed_data_path, "wb") as f:
                 pickle.dump(self.processed, f)
 
@@ -132,7 +143,94 @@ def get_dataloader(
     batch_size=16,
     missing_ratio=0.1,
     current_id="covid_causal_14d",
+    split="random",
 ):
+    """
+    Args:
+        split: "random" — single `{current_id}.csv`, 80/10/10 style split (actually 72/8/20
+               after reserving 10%% of the 80%% train pool for validation, disjoint).
+        split: "files" — `./data/covid-19/covid_norm_data/{current_id}_train.csv`,
+               `{current_id}_test.csv`, with matching masks under `covid_mask/`.
+               Train pool is subdivided ~90%% train / ~10%% validation (disjoint indices).
+    """
+    np.random.seed(seed)
+
+    if split == "files":
+        norm_dir = "./data/covid-19/covid_norm_data/"
+        mask_dir = "./data/covid-19/covid_mask/"
+        train_csv = os.path.join(norm_dir, f"{current_id}_train.csv")
+        test_csv = os.path.join(norm_dir, f"{current_id}_test.csv")
+        train_mask = os.path.join(mask_dir, f"{current_id}_train.csv")
+        test_mask = os.path.join(mask_dir, f"{current_id}_test.csv")
+        if not os.path.isfile(train_csv) or not os.path.isfile(test_csv):
+            raise FileNotFoundError(
+                f'split="files" requires:\n  {train_csv}\n  {test_csv}'
+            )
+        if not os.path.isfile(train_mask) or not os.path.isfile(test_mask):
+            raise FileNotFoundError(
+                f'split="files" requires masks:\n  {train_mask}\n  {test_mask}'
+            )
+
+        pool = tabular_dataset(
+            missing_ratio=missing_ratio,
+            seed=seed,
+            train=True,
+            current_id=current_id,
+            dataset_path=train_csv,
+            mask_path=train_mask,
+        )
+        n_pool = len(pool)
+        idx = np.arange(n_pool)
+        np.random.shuffle(idx)
+        n_valid = max(1, int(n_pool * 0.1))
+        valid_positions = idx[:n_valid]
+        train_positions = idx[n_valid:]
+
+        train_dataset = tabular_dataset(
+            use_index_list=np.sort(train_positions),
+            missing_ratio=missing_ratio,
+            seed=seed,
+            train=True,
+            current_id=current_id,
+            dataset_path=train_csv,
+            mask_path=train_mask,
+        )
+        valid_dataset = tabular_dataset(
+            use_index_list=np.sort(valid_positions),
+            missing_ratio=missing_ratio,
+            seed=seed,
+            train=False,
+            current_id=current_id,
+            dataset_path=train_csv,
+            mask_path=train_mask,
+        )
+
+        test_n = pd.read_csv(test_csv).shape[0]
+        test_index = np.arange(test_n)
+        test_dataset = tabular_dataset(
+            use_index_list=test_index,
+            missing_ratio=missing_ratio,
+            seed=seed,
+            train=False,
+            current_id=current_id,
+            dataset_path=test_csv,
+            mask_path=test_mask,
+        )
+
+        print(f"Dataset split: files (provided train CSV rows={n_pool})")
+        print(f"Training dataset size (subset of train file): {len(train_dataset)}")
+        print(f"Validation dataset size: {len(valid_dataset)}")
+        print(f"Testing dataset size (test file): {len(test_dataset)}")
+
+        return (
+            DataLoader(train_dataset, batch_size=batch_size, shuffle=1),
+            DataLoader(valid_dataset, batch_size=batch_size, shuffle=0),
+            DataLoader(test_dataset, batch_size=batch_size, shuffle=0),
+        )
+
+    if split != "random":
+        raise ValueError(f"dataset split must be 'random' or 'files', got {split!r}")
+
     dataset = tabular_dataset(
         missing_ratio=missing_ratio,
         seed=seed,
@@ -149,8 +247,10 @@ def get_dataloader(
     test_index = indlist[tsi:]
     remain_index = np.arange(0, tsi)
     np.random.shuffle(remain_index)
-    train_index = remain_index[:tsi]
-    valid_index = remain_index[: int(tsi * 0.1)]
+    # Hold out ~10%% of non-test indices for validation (disjoint from training).
+    n_valid = max(1, int(len(remain_index) * 0.1))
+    valid_index = remain_index[:n_valid]
+    train_index = remain_index[n_valid:]
 
     train_dataset = tabular_dataset(
         use_index_list=train_index,

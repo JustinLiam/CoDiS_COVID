@@ -1,8 +1,16 @@
+# Dataset split modes:
+# - "random": one table `covid_norm_data/{current_id}.csv` (+ mask).
+# - "files": pre-split CSVs `{current_id}_train.csv` / `{current_id}_test.csv` (+ matching masks).
+#   PropensityNet is fitted on `_train.csv` only when split is "files".
 dataset:
   data_name: "covid"
+  # Split strategy: "random" = single `{current_id}.csv` with randomized train/valid/test slices;
+  # "files" = `./data/covid-19/covid_norm_data/{current_id}_train.csv` and `_test.csv` (+ matching masks).
+  split: "files"
+  # Use pre-split train/test files: set split to "files".
 
 train:
-  epochs: 500
+  epochs: 300
   batch_size: 128
   lr: 0.0002
   weight_decay: 0.002
@@ -22,11 +30,11 @@ diffusion:
   nheads: 2
   diffusion_embedding_dim: 128
   beta_start: 0.0001
-  beta_end: 0.01
-  num_steps: 200
+  beta_end: 0.2
+  num_steps: 100
   schedule: "quad"
   mixed: False
-  state_dim: 32
+  state_dim: 64
 
 model:
   is_unconditional: 0

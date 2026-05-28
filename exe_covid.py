@@ -24,7 +24,7 @@ parser.add_argument("--seed", type=int, default=1)
 parser.add_argument("--testmissingratio", type=float, default=0.2)
 parser.add_argument("--unconditional", action="store_true", default=0)
 parser.add_argument("--modelfolder", type=str, default="")
-parser.add_argument("--nsample", type=int, default=100)
+parser.add_argument("--nsample", type=int, default=500)
 parser.add_argument("--train", type=int, default=1)
 parser.add_argument("--smoke_test", type=int, default=0, help="1: dataloader/model sanity only")
 parser.add_argument(
@@ -45,6 +45,21 @@ with open(path, "r") as f:
 config["model"]["is_unconditional"] = args.unconditional
 config["model"]["test_missing_ratio"] = args.testmissingratio
 
+run = wandb.init(
+    project="CoDiS-covid-newdata",
+    notes="CoDiS-covid-newdata",
+    name=f"{args.current_id}_seed{args.seed}",
+    config={
+        "epochs": config["train"]["epochs"],
+        "num_steps": config["diffusion"]["num_steps"],
+        "lr": config["train"]["lr"],
+        "weight_decay": config["train"]["weight_decay"],
+        "beta_start": config["diffusion"]["beta_start"],
+        "beta_end": config["diffusion"]["beta_end"],
+        "state_dim": config["diffusion"]["state_dim"],
+    },
+)
+
 data_name = config["dataset"]["data_name"]
 if data_name != "covid":
     raise ValueError(f"exe_covid.py expects dataset.data_name='covid', got '{data_name}'")
@@ -62,14 +77,27 @@ with open(foldername + "config.json", "w") as f:
     json.dump(config, f, indent=4)
 
 print("Start exe_covid on current_id", args.current_id)
+dataset_split = config.get("dataset", {}).get("split", "random")
 train_loader, valid_loader, test_loader = get_dataloader(
     seed=args.seed,
     batch_size=config["train"]["batch_size"],
     missing_ratio=config["model"]["test_missing_ratio"],
     current_id=args.current_id,
+    split=dataset_split,
 )
 
-propnet = load_data(dataset_name=data_name, current_id=args.current_id)
+# When using explicit train/test CSVs, fit propensity on training rows only (no test leakage).
+propnet_csv = None
+if dataset_split == "files":
+    propnet_csv = (
+        "./data/covid-19/covid_norm_data/" + args.current_id + "_train.csv"
+    )
+
+propnet = load_data(
+    dataset_name=data_name,
+    current_id=args.current_id,
+    dataset_path_override=propnet_csv,
+)
 print("Finish training propnet and fix the parameters")
 propnet.eval()
 
@@ -82,18 +110,18 @@ if args.smoke_test:
     print("SMOKE TEST PASSED: dataloader + propnet + model forward are OK.")
     raise SystemExit(0)
 
-run = wandb.init(
-    project="CoDiS-covid",
-    notes="CoDiS-covid",
-    name=args.current_id,
-)
+# run = wandb.init(
+#     project="CoDiS-covid-newdata",
+#     notes="DiffPO-covid-newdata",
+#     name=f"{args.current_id}_seed{args.seed}",
+# )
 
 if args.train:
-    wandb.config = {
-        "epochs": config["train"]["epochs"],
-        "num_steps": config["diffusion"]["num_steps"],
-        "lr": config["train"]["lr"],
-    }
+    # wandb.config = {
+    #     "epochs": config["train"]["epochs"],
+    #     "num_steps": config["diffusion"]["num_steps"],
+    #     "lr": config["train"]["lr"],
+    # }
     train(
         model,
         config["train"],

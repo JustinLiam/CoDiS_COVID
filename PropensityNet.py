@@ -356,10 +356,14 @@ from sklearn.model_selection import train_test_split
 
 
 
-def load_data(dataset_name = 'acic', current_id='0'):
-    
+def load_data(dataset_name="acic", current_id="0", dataset_path_override=None):
+    # Optional explicit CSV path (e.g. covid `_train.csv` only when dataset split uses files).
+    if dataset_path_override is not None:
+        dataset_path = dataset_path_override
+        print("dataset_path (override)", dataset_path)
+
     # data path
-    if dataset_name == 'acic2016':
+    if dataset_path_override is None and dataset_name == 'acic2016':
             dataset_path = "./data/acic2016/acic2016_norm_data/" + current_id + ".csv"
             print('dataset_path', dataset_path)
 
