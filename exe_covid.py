@@ -30,7 +30,7 @@ parser.add_argument("--smoke_test", type=int, default=0, help="1: dataloader/mod
 parser.add_argument(
     "--wandb_mode",
     type=str,
-    default="online",
+    default="disabled",
     choices=["disabled", "online", "offline"],
 )
 args = parser.parse_args()
@@ -46,8 +46,8 @@ config["model"]["is_unconditional"] = args.unconditional
 config["model"]["test_missing_ratio"] = args.testmissingratio
 
 run = wandb.init(
-    project="CoDiS-covid-newdata",
-    notes="CoDiS-covid-newdata",
+    project="CoDiS-covid",
+    notes="CoDiS-covid",
     name=f"{args.current_id}_seed{args.seed}",
     config={
         "epochs": config["train"]["epochs"],
@@ -110,18 +110,8 @@ if args.smoke_test:
     print("SMOKE TEST PASSED: dataloader + propnet + model forward are OK.")
     raise SystemExit(0)
 
-# run = wandb.init(
-#     project="CoDiS-covid-newdata",
-#     notes="DiffPO-covid-newdata",
-#     name=f"{args.current_id}_seed{args.seed}",
-# )
 
 if args.train:
-    # wandb.config = {
-    #     "epochs": config["train"]["epochs"],
-    #     "num_steps": config["diffusion"]["num_steps"],
-    #     "lr": config["train"]["lr"],
-    # }
     train(
         model,
         config["train"],
